@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search</title>
+    <link rel="icon" href="./logo/logo_s.ico" type="images/x-ico" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1b1b1b;
+            color: white;
+            margin: 0;
+            padding: 0;
+            perspective: 800px; /* Control the depth of the 3D effect */
+        }
+        .input-group {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+        .input-group label {
+            margin-right: 10px;
+        }
+        .input-group input {
+            margin-right: 10px;
+            padding: 5px;
+        }
+        button {
+            padding: 5px 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            table-layout: fixed;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        th {
+            background-color: #333;
+            color: white;
+            position: relative;
+        }
+        tr:nth-child(even) {
+            background-color: #2b2b2b;
+        }
+        a {
+            color: #ffffff; /* 设置链接颜色 */
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 20px;
+            color: white;
+        }
+        .pagination button, .pagination input, .pagination span, .pagination select {
+            margin: 0 5px;
+            padding: 5px 10px;
+            background-color: #333;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        .pagination button.disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+        .pagination input {
+            width: 50px;
+            padding: 5px;
+            margin: 0 5px;
+            text-align: center;
+        }
+        .pagination .page-number {
+            margin: 0 2px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .pagination .page-number.active {
+            background-color: #1e90ff;
+        }
+    </style>
+    <link rel="stylesheet" href="./css/jquery-ui.css">
+    <script src="./js/jquery-3.6.0.min.js"></script>
+    <script src="./js/jquery-ui.min.js"></script>
+</head>
+<body>
+    <div class="input-group">
+        <label for="url">URL: </label>
+        <input type="text" id="url">
+        <label for="path">Path: </label>
+        <input type="text" id="path">
+        <label for="username">Username: </label>
+        <input type="text" id="username">
+        <label for="password">Password: </label>
+        <input type="text" id="password">
+        <button onclick="fetchData()">Search</button>
+    </div>
+    <div id="results"></div>
+    <div class="pagination" id="pagination"></div>
+    <script>
+        let rowsPerPage = 15;
+        let currentPage = 1;
+        let totalPages = 1;
+        let allResults = [];
+        let initialElapsedTime = 0;
+
+        async function fetchData() {
+            const username = document.getElementById('username').value;
+            const path = document.getElementById('path').value;
+            const password = document.getElementById('password').value;
+            const url = document.getElementById('url').value;
+
+            const mustQueries = [];
+            if (username) mustQueries.push({"wildcard": {"Username": username}});
+            if (path) mustQueries.push({"wildcard": {"Path": path}});
+            if (password) mustQueries.push({"wildcard": {"Password": password}});
+            if (url) mustQueries.push({"wildcard": {"URL": url}});
+
+            if (mustQueries.length === 0) {
+                alert('请至少输入一个搜索条件');
+                return;
+            }
+
+            const startTime = performance.now(); // 记录开始时间
+            let size = 10000; // 修改为10000
+            let totalResults = 0;
+            allResults = [];
+
+            const response = await fetch('http://10.10.3.12:9200/_all/_search?scroll=1m', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    "query": {
+                        "bool": {
+                            "must": mustQueries,
+                            "must_not": [],
+                            "should": []
+                        }
+                    },
+                    "from": 0,
+                    "size": size,
+                    "sort": [],
+                    "aggs": {},
+                    "version": true
+                })
+            });
+            const data = await response.json();
+            const scrollId = data._scroll_id;
+            let hits = data.hits.hits;
+            totalResults = data.hits.total.value;
+
+            allResults = allResults.concat(hits);
+
+            while (hits.length > 0) {
+                const scrollResponse = await fetch('http://10.10.3.12:9200/_search/scroll', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        "scroll": "1m",
+                        "scroll_id": scrollId
+                    })
+                });
+                const scrollData = await scrollResponse.json();
+                hits = scrollData.hits.hits;
+
+                if (hits.length === 0) {
+                    break;
+                }
+
+                allResults = allResults.concat(hits);
+            }
+
+            const endTime = performance.now(); // 记录结束时间
+            initialElapsedTime = endTime - startTime; // 计算耗时
+
+            totalPages = Math.ceil(allResults.length / rowsPerPage);
+            currentPage = 1; // Reset to first page on new search
+            displayResults(allResults.length, initialElapsedTime);
+            updatePagination();
+        }
+
+        function displayResults(totalResults, elapsedTime) {
+            const resultsDiv = document.getElementById('results');
+            const start = (currentPage - 1) * rowsPerPage;
+            const end = start + rowsPerPage;
+            const results = allResults.slice(start, end);
+
+            let table = `<div>${totalResults} 条匹配结果，耗时 ${elapsedTime.toFixed(2)} ms</div>`;
+            table += '<table><tr><th>URL<div></div></th><th>Path<div></div></th><th>Username<div></div></th><th>Password<div></div></th></tr>';
+            results.forEach(result => {
+                const source = result._source;
+                table += `<tr>
+                    <td><a href="${source.URL}" target="_blank">${source.URL}</a></td>
+                    <td>${source.Path}</td>
+                    <td>${source.Username}</td>
+                    <td>${source.Password}</td>
+                </tr>`;
+            });
+            table += '</table>';
+            resultsDiv.innerHTML = table;
+
+            // Make table headers resizable
+            $('th').each(function() {
+                $(this).resizable({
+                    handles: 'e',
+                    minWidth: 50,
+                    stop: function(event, ui) {
+                        const index = $(this).index() + 1;
+                        const width = $(this).width();
+                        $('td:nth-child(' + index + ')').width(width);
+                    }
+                });
+            });
+        }
+
+        function updatePagination() {
+            const paginationDiv = document.getElementById('pagination');
+            paginationDiv.innerHTML = '';
+
+            const totalItems = allResults.length;
+            totalPages = Math.ceil(totalItems / rowsPerPage);
+
+            const totalItemsSpan = document.createElement('span');
+            totalItemsSpan.innerText = `共${totalItems}条`;
+            paginationDiv.appendChild(totalItemsSpan);
+
+            const rowsPerPageSelect = document.createElement('select');
+            [10, 15, 20, 50].forEach(size => {
+                const option = document.createElement('option');
+                option.value = size;
+                option.innerText = `${size}条/页`;
+                if (size === rowsPerPage) {
+                    option.selected = true;
+                }
+                rowsPerPageSelect.appendChild(option);
+            });
+            rowsPerPageSelect.onchange = () => {
+                rowsPerPage = parseInt(rowsPerPageSelect.value);
+                totalPages = Math.ceil(totalItems / rowsPerPage);
+                currentPage = 1;
+                displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                updatePagination();
+            };
+            paginationDiv.appendChild(rowsPerPageSelect);
+
+            const prevButton = document.createElement('button');
+            prevButton.innerText = '<';
+            prevButton.onclick = () => {
+                if (currentPage > 1) {
+                    currentPage--;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                }
+            };
+            if (currentPage === 1) {
+                prevButton.classList.add('disabled');
+            }
+            paginationDiv.appendChild(prevButton);
+
+            const pageNumbers = document.createElement('div');
+            const maxPagesToShow = 5;
+            const halfMaxPagesToShow = Math.floor(maxPagesToShow / 2);
+
+            let startPage = Math.max(1, currentPage - halfMaxPagesToShow);
+            let endPage = Math.min(totalPages, currentPage + halfMaxPagesToShow);
+
+            if (currentPage <= halfMaxPagesToShow) {
+                endPage = Math.min(totalPages, maxPagesToShow);
+            } else if (currentPage + halfMaxPagesToShow >= totalPages) {
+                startPage = Math.max(1, totalPages - maxPagesToShow + 1);
+            }
+
+            if (startPage > 1) {
+                const firstPage = document.createElement('span');
+                firstPage.innerText = 1;
+                firstPage.classList.add('page-number');
+                firstPage.onclick = () => {
+                    currentPage = 1;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                };
+                pageNumbers.appendChild(firstPage);
+
+                if (startPage > 2) {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.innerText = '...';
+                    pageNumbers.appendChild(ellipsis);
+                }
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                const pageNumber = document.createElement('span');
+                pageNumber.innerText = i;
+                pageNumber.classList.add('page-number');
+                if (i === currentPage) {
+                    pageNumber.classList.add('active');
+                }
+                pageNumber.onclick = () => {
+                    currentPage = i;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                };
+                pageNumbers.appendChild(pageNumber);
+            }
+
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    const ellipsis = document.createElement('span');
+                    ellipsis.innerText = '...';
+                    pageNumbers.appendChild(ellipsis);
+                }
+
+                const lastPage = document.createElement('span');
+                lastPage.innerText = totalPages;
+                lastPage.classList.add('page-number');
+                lastPage.onclick = () => {
+                    currentPage = totalPages;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                };
+                pageNumbers.appendChild(lastPage);
+            }
+
+            paginationDiv.appendChild(pageNumbers);
+
+            const nextButton = document.createElement('button');
+            nextButton.innerText = '>';
+            nextButton.onclick = () => {
+                if (currentPage < totalPages) {
+                    currentPage++;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                }
+            };
+            if (currentPage === totalPages) {
+                nextButton.classList.add('disabled');
+            }
+            paginationDiv.appendChild(nextButton);
+
+            const pageInput = document.createElement('input');
+            pageInput.type = 'number';
+            pageInput.value = currentPage;
+            pageInput.min = 1;
+            pageInput.max = totalPages;
+            pageInput.onchange = () => {
+                const page = parseInt(pageInput.value);
+                if (page >= 1 && page <= totalPages) {
+                    currentPage = page;
+                    displayResults(allResults.length, initialElapsedTime); // 使用初始耗时
+                    updatePagination();
+                } else {
+                    pageInput.value = currentPage;
+                }
+            };
+            paginationDiv.appendChild(pageInput);
+        }
+    </script>
+</body>
+</html>
